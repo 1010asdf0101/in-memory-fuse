@@ -1,5 +1,3 @@
 .vscode/
 backup/
 *.gz
-kdm_os
-kdm_os.c
