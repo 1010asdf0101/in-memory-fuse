@@ -2,6 +2,8 @@
 #include <errno.h>
 #include <time.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
 
 typedef struct stat status;
 typedef struct DirectoryTree{
@@ -12,46 +14,73 @@ typedef struct DirectoryTree{
 
 typedef struct fileDescriptor{
     DirTree* ptr_Tree[30];
-    uint64_t idx;
+    int cnt;
 } FileDes;
 
 
+DirTree* newDirTree(DirTree *par, char *name, char *data, mode_t mod){
+    DirTree* tmp= (DirTree* ) malloc( sizeof(DirTree) );
+    int len=strlen(name)+1;
+    tmp->parent=par;
+    tmp->next=tmp->child=NULL;
+
+    tmp->name=(char*)malloc(len);
+    strncpy(tmp->name, name, len-1);
+    tmp->name[len-1]='\0';
+
+    if(data==NULL) tmp->data=NULL;
+    else{len=strlen(data)+1;
+        tmp->data=(char*)malloc(len);   
+        strncpy(tmp->data, data, len-1);
+        tmp->data[len-1]='\0';
+    }
+    tmp->st.st_mode=mod;
+    tmp->st.st_atime=tmp->st.st_ctime=tmp->st.st_mtime=time(NULL);
+    tmp->st.st_size=len;
+    tmp->st.st_uid=getuid();
+    tmp->st.st_gid=getgid();
+    return tmp;
+}
 
 int pushChild(DirTree *pa_dt, DirTree *ch_dt){
     if(pa_dt->child==NULL){
         pa_dt->child=ch_dt;
         ch_dt->parent=pa_dt;
-        return -1;
+        return 0;
     }
     DirTree *cur=pa_dt->child;  
     while(cur->next!=NULL)
         cur=cur->next;
     cur->next = ch_dt;
-
+    ch_dt->parent=pa_dt;
     return 0;
 }
 
-int addFileDes(FileDes *fd, DirTree *ptr){
-    if(fd->idx>=30) return -EMFILE;
-    fd->ptr_Tree[fd->idx]=ptr;
-    fd->idx=fd->idx+1;
-    return (int)fd->idx-1;
+uint64_t addFileDes(FileDes *fd, DirTree *ptr){
+    int empty_idx;
+    if(fd->cnt>=30) return -EMFILE;
+    for(int i=0;i<30;i++) {
+        if(fd->ptr_Tree[i]==NULL){
+            empty_idx=i;
+         break;
+        }
+    }
+    fd->ptr_Tree[empty_idx]=ptr;
+    ++fd->cnt;
+    return empty_idx;
 }
 
 DirTree* getFileDes(FileDes *fd, uint64_t idx){
-    if(idx>fd->idx) return NULL;
-    if(idx<1 || idx>30) return NULL;
+    if(idx<0 || idx>30) return NULL;
     return fd->ptr_Tree[idx];
 }
 
-DirTree* popFileDes(FileDes *fd, uint64_t idx){
-    DirTree *deleted=NULL;
-    if(idx>fd->idx || idx<2 || idx>30) return NULL;
+DirTree* deleteFileDes(FileDes *fd, uint64_t idx){
+    DirTree *deleted;
+    if(idx>=30) return NULL;
     deleted=fd->ptr_Tree[idx];
-    for(int i=idx;i<fd->idx-1;++i){
-        fd->ptr_Tree[i]=fd->ptr_Tree[i+1];
-    }
-    --fd->idx;
+    fd->ptr_Tree[idx]=NULL;
+    --fd->cnt;
     return deleted;
 }
 
