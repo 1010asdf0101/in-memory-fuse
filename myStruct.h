@@ -30,7 +30,10 @@ DirTree* newDirTree(DirTree *par, char *name, char *data, mode_t mod){
     strncpy(tmp->name, name, len-1);
     tmp->name[len-1]='\0';
 
-    if(data==NULL) tmp->data=NULL;
+    if(data==NULL){
+        len=0;
+        tmp->data=NULL;
+    }
     else{len=strlen(data)+1;
         tmp->data=(char*)malloc(len);   
         strncpy(tmp->data, data, len-1);
@@ -44,10 +47,21 @@ DirTree* newDirTree(DirTree *par, char *name, char *data, mode_t mod){
     return tmp;
 }
 
+void updateParent(DirTree *cur, int size, time_t t){
+    while(cur!=NULL){
+        cur->st.st_size+=size;
+        cur->st.st_atime=cur->st.st_ctime=t;
+        cur=cur->parent;
+    }
+}
+
 int pushChild(DirTree *pa_dt, DirTree *ch_dt){
+    time_t t=time(NULL);
     if(pa_dt->child==NULL){
         pa_dt->child=ch_dt;
         ch_dt->parent=pa_dt;
+        updateParent(pa_dt, ch_dt->st.st_size, t);
+        ch_dt->st.st_atime=ch_dt->st.st_ctime=t;
         return 0;
     }
     DirTree *cur=pa_dt->child;  
@@ -55,14 +69,18 @@ int pushChild(DirTree *pa_dt, DirTree *ch_dt){
         cur=cur->next;
     cur->next = ch_dt;
     ch_dt->parent=pa_dt;
+    updateParent(pa_dt, ch_dt->st.st_size, t);
+    ch_dt->st.st_atime=ch_dt->st.st_ctime=t;
     return 0;
 }
 
 int freeNode(DirTree *dt){
     DirTree *p_dt=dt->parent;
     DirTree *cur;
+    time_t t=time(NULL);
     if(p_dt->child==dt){
         p_dt->child=NULL;
+        updateParent(p_dt, -dt->st.st_size, t);
         free(dt->name);
         free(dt->data);
         free(dt);
@@ -72,6 +90,7 @@ int freeNode(DirTree *dt){
     while(cur->next!=dt)
         cur=cur->next;
     cur->next=dt->next;
+    updateParent(p_dt, -dt->st.st_size, t);
     free(dt->name);
     free(dt->data);
     free(dt);

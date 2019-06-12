@@ -1,4 +1,5 @@
 #define FUSE_USE_VERSION 26
+#define HAVE_SETXATTR 0
 
 #include <string.h>
 #include <fcntl.h>
@@ -164,10 +165,12 @@ static int hello_open(const char *path, struct fuse_file_info *fi) {
 	if((fi->flags&O_ACCMODE)==O_RDONLY) open_mode=R_OK;
 	else if((fi->flags&O_ACCMODE)==O_WRONLY) open_mode=W_OK;
 	else open_mode=W_OK | R_OK;
-	err=checkPermission(id,file_mode, open_mode);
 
+	err=checkPermission(id,file_mode, open_mode);
 	if(err<0) return err;
+
 	fi->fh=addFileDes(&Fd, cur);
+	cur->st.st_atime=time(NULL);
 	return 0;
 }
 
@@ -187,6 +190,7 @@ static int hello_opendir(const char *path, struct fuse_file_info *fi){
 	res=addFileDes(&Fd, cur);
 	if(res<0) return res;
 	fi->fh=res;
+	cur->st.st_atime=time(NULL);
 	return 0;
 }
 
@@ -206,6 +210,7 @@ static int hello_read(const char *path, char *buf, size_t size, off_t offset, st
 	}
 	else 
 		size = 0;
+	cur->st.st_atime=time(NULL);
 	return size;
 }
 
@@ -217,25 +222,33 @@ static int hello_release(const char *path, struct fuse_file_info *fi){
 static int hello_write(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi){
 	DirTree* cur;
 	char *tmp;
+	size_t diff;
+	time_t t=time(NULL);
+
 	cur=getFileDes(&Fd, fi->fh);
 	if(cur==NULL){
 		return -EBADF;
 	}
 
+	diff=size-cur->st.st_size;
+
 	tmp=cur->data;
+
 	cur->data=(char*)malloc(size);
 	strncpy(cur->data+offset, buf, size);
+
 	cur->st.st_size=size;
-	Debug_showDT(cur);
+	updateParent(cur->parent, diff, t);
+	cur->st.st_atime=cur->st.st_mtime=cur->st.st_ctime=t;
 	free(tmp);
-	if(offset>=size) return 0;
 	return size;
 }
 
 static int hello_truncate(const char *path, off_t offset, struct fuse_file_info *fi){
 	DirTree *cur;
 	mode_t file_mode;
-	size_t st_size;
+	size_t st_size, diff;
+	time_t t=time(NULL);
 	char *tmp;
 
 	cur=findWithPath(path);
@@ -245,6 +258,7 @@ static int hello_truncate(const char *path, off_t offset, struct fuse_file_info 
 	if(file_mode&__S_IFDIR)	return -EISDIR;
 	if(!(file_mode&W_OK)) return -EACCES;
 	st_size=cur->st.st_size;
+	diff=offset-st_size;
 	tmp=(char*)malloc(offset);
 	if(st_size>offset) strncpy(tmp, cur->data, offset);
 	else{
@@ -253,6 +267,8 @@ static int hello_truncate(const char *path, off_t offset, struct fuse_file_info 
 	}
 	cur->data=tmp;
 	cur->st.st_size=offset;
+	updateParent(cur->parent, diff, t);
+	cur->st.st_atime=cur->st.st_mtime=cur->st.st_ctime=t;
 	return 0;
 }
 
@@ -345,6 +361,24 @@ static int hello_rmdir(const char *path){
 	return 0;
 }
 
+static int hello_chmod(const char* path, mode_t mode, struct fuse_file_info *fi){
+	DirTree *cur;
+	int id[2];
+	cur=findWithPath(path);
+	if(cur==NULL) return -ENOENT;
+	
+	id[0]=cur->st.st_uid;
+	id[1]=cur->st.st_gid;
+	if(checkPermission(id, cur->st.st_mode, W_OK)>=0){
+		mode_t mask=0777;
+		mask=~mask;
+		cur->st.st_mode=(cur->st.st_mode&mask)|mode;
+		cur->st.st_atime=cur->st.st_ctime=time(NULL);
+		return 0;
+	}
+	return -EACCES;
+}
+
 static struct fuse_operations hello_oper = {
 	.getattr = hello_getattr,
 	.readdir = hello_readdir,
@@ -359,6 +393,7 @@ static struct fuse_operations hello_oper = {
 	.mkdir = hello_mkdir,
 	.unlink = hello_unlink,
 	.rmdir = hello_rmdir,
+	.chmod = hello_chmod,
 };
 
 void init_global(){
