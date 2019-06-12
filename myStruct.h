@@ -1,5 +1,6 @@
 #include <sys/types.h>
 #include <errno.h>
+#include <fuse.h>
 #include <time.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -21,6 +22,7 @@ typedef struct fileDescriptor{
 DirTree* newDirTree(DirTree *par, char *name, char *data, mode_t mod){
     DirTree* tmp= (DirTree* ) malloc( sizeof(DirTree) );
     int len=strlen(name)+1;
+    struct fuse_context *fc=fuse_get_context();
     tmp->parent=par;
     tmp->next=tmp->child=NULL;
 
@@ -37,8 +39,8 @@ DirTree* newDirTree(DirTree *par, char *name, char *data, mode_t mod){
     tmp->st.st_mode=mod;
     tmp->st.st_atime=tmp->st.st_ctime=tmp->st.st_mtime=time(NULL);
     tmp->st.st_size=len;
-    tmp->st.st_uid=getuid();
-    tmp->st.st_gid=getgid();
+    tmp->st.st_uid=fc->uid;
+    tmp->st.st_gid=fc->gid;
     return tmp;
 }
 
@@ -53,6 +55,26 @@ int pushChild(DirTree *pa_dt, DirTree *ch_dt){
         cur=cur->next;
     cur->next = ch_dt;
     ch_dt->parent=pa_dt;
+    return 0;
+}
+
+int freeNode(DirTree *dt){
+    DirTree *p_dt=dt->parent;
+    DirTree *cur;
+    if(p_dt->child==dt){
+        p_dt->child=NULL;
+        free(dt->name);
+        free(dt->data);
+        free(dt);
+        return 0;
+    }
+    cur=p_dt->child;
+    while(cur->next!=dt)
+        cur=cur->next;
+    cur->next=dt->next;
+    free(dt->name);
+    free(dt->data);
+    free(dt);
     return 0;
 }
 
@@ -85,9 +107,13 @@ DirTree* deleteFileDes(FileDes *fd, uint64_t idx){
 }
 
 void Debug_showDT(DirTree *dt){
-    if(dt==NULL) puts("$$$DirTree is NULL ptr");
+    if(dt==NULL) {
+        puts("$$$DirTree is NULL ptr");
+        return;
+    }
     printf("$$$name : %s\n", dt->name);
     printf("$$$child : %s, next : %s, parent : %s\n", 
         dt->child?dt->child->name:"null", dt->next?dt->next->name:"null", dt->parent?dt->parent->name:"null");
-    printf("$$$Data : %s length : %ld\n", dt->data?dt->data:"null", dt->st.st_size);
+    printf("$$$Data : %s, Length : %ld, MODE : %o\n", dt->data?dt->data:"null", dt->st.st_size, dt->st.st_mode);
+
 }

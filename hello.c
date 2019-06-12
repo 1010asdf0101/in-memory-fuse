@@ -1,6 +1,5 @@
 #define FUSE_USE_VERSION 26
 
-#include <fuse.h>
 #include <string.h>
 #include <fcntl.h>
 #include "myStruct.h"
@@ -16,16 +15,14 @@ DirTree *findWithPath(const char *path){
 	char *t_path=(char*)malloc(sizeof(char)*(strlen(path)+1));
 	int done=0;
 	if(path==NULL) return NULL;
-
 	strcpy(t_path, path);
 
-	tmp = strtok(t_path+1, "/");
-
+	tmp = strtok(t_path, "/");
 	if(tmp==NULL) return Root;
-
+	
 	cur=Root->child;
 
-	while(tmp != NULL)
+	while(tmp != NULL && cur!=NULL)
 	{
 		while(cur != NULL){
 			if(strcmp(cur->name, tmp)==0){
@@ -34,29 +31,32 @@ DirTree *findWithPath(const char *path){
 			}
 			cur=cur->next;
 		}
-		if(done) break;
-		tmp=strtok(NULL, "/");
-		if(cur!=NULL)
+		if(done){
+			tmp=strtok(NULL, "/");
+			if(tmp==NULL) {
+				free(t_path);
+				return cur;
+			}
 			cur=cur->child;
+		}
 	}
 	free(t_path);
-	return cur;
+	return NULL;
 }
 
 DirTree *findParent(const char *path){
-	unsigned int count=0;
 	size_t len=strlen(path);
 	char *last, *t_path;
+	DirTree* res;
 
 	if(len==0 || len==1) return NULL;
 	t_path=(char*)malloc(sizeof(char)*(len+1));
-
+	strncpy(t_path, path, len);
 	last=strrchr(t_path, '/');
-	last='\0';
-	printf("***FIND PAR***\n");
-	printf("***MOD path : %s \n", t_path);
+	*last='\0';
+	res=findWithPath(t_path);
 	free(t_path);
-	return findWithPath(t_path);
+	return res;
 }
 
 unsigned int checkPermission(unsigned int *id, unsigned int fileMode, unsigned int mode){
@@ -103,7 +103,6 @@ static int hello_getattr(const char *path, struct stat *stbuf){
 	if(cur==NULL) {
 		return -ENOENT;
 	}
-
 	memset(stbuf,0,sizeof(struct stat));
 
 	stbuf->st_mode = cur->st.st_mode;
@@ -130,9 +129,6 @@ static int hello_readdir(const char *path, void *buf, fuse_fill_dir_t filler, of
 	if(cur==NULL) {
 		return -EBADF;
 	}
-
-	Debug_showDT(cur);
-
 	if(cur->st.st_mode&__S_IFREG) {
 		return -ENOTDIR;
 	}
@@ -178,11 +174,7 @@ static int hello_open(const char *path, struct fuse_file_info *fi) {
 static int hello_opendir(const char *path, struct fuse_file_info *fi){
 	DirTree *cur;
 	int res;
-	printf("###OPENDIR , path :%s, FD : %ld\n", path, fi->fh);
 	cur=findWithPath(path);
-	printf("###res of FWP\n");
-	if(cur==NULL) printf("NULL!!\n");
-	else Debug_showDT(cur);
 	if(cur==NULL) {
 		return -ENOENT;
 	}
@@ -269,23 +261,89 @@ static int hello_releasedir(const char *path, struct fuse_file_info *fi){
 	return 0;
 }
 
-// static int hello_mknod(const char *path, mode_t mode, dev_t dev){
-// 	DirTree* cur, *par;
-// 	mode_t p_mode;
-// 	unsigned int id[2], err=0;
-// 	cur=findWithPath(path);
-// 	if(cur!=NULL) return -EEXIST;
-// 	par=findParent(path);
-// 	if(par==NULL) return -ENOENT;
+static int hello_mknod(const char *path, mode_t mode, dev_t dev){
+	DirTree* cur, *par;
+	mode_t p_mode;
+	unsigned int id[2], err=0;
+	cur=findWithPath(path);
+	if(cur!=NULL) return -EEXIST;
+	par=findParent(path);
+	if(par==NULL) return -ENOENT;
+	p_mode=par->st.st_mode;
+	if(p_mode&__S_IFREG) return -ENOTDIR;
+
+	id[0]=par->st.st_uid;
+	id[1]=par->st.st_gid;
+	err=checkPermission(id, p_mode, W_OK);
+	if(err<0) return err;
+	cur=newDirTree(par, strrchr(path, '/')+1, NULL, mode);
+	pushChild(par, cur);
+	return err;
+}
+
+static int hello_mkdir(const char *path, mode_t mode){
+	DirTree* cur, *par;
+	mode_t p_mode;
+	unsigned int id[2], err=0;
+	cur=findWithPath(path);
+	if(cur!=NULL) return -EEXIST;
+	par=findParent(path);
+	if(par==NULL) return -ENOENT;
+	p_mode=par->st.st_mode;
+	if(p_mode&__S_IFREG) return -ENOTDIR;
 	
-// 	id[0]=par->st.st_uid;
-// 	id[1]=par->st.st_gid;
-// 	err=checkPermission(id, par->st.st_mode, W_OK);
-// 	if(err<0) return err;
-// 	cur=newDirTree(par, strrchr(path, '/')+1, NULL, mode);
-// 	pushChild(par, cur);
-// 	return err;
-//}
+	id[0]=par->st.st_uid;
+	id[1]=par->st.st_gid;
+	err=checkPermission(id, p_mode, W_OK);
+	if(err<0) return err;
+	cur=newDirTree(par, strrchr(path, '/')+1, NULL, __S_IFDIR|mode);
+	pushChild(par, cur);
+	return err;
+}
+
+static int hello_unlink(const char*path){
+	DirTree *cur;
+	mode_t mod;
+	int err, id[2];
+	cur=findWithPath(path);
+	if(cur==NULL) return -ENOENT;
+
+	for(int i=0;i<30;i++){
+		if(Fd.ptr_Tree[i]==cur)
+			return -EBUSY;
+	}
+
+	mod=cur->st.st_mode;
+	if(mod & __S_IFDIR) return -EISDIR;
+	id[0]=cur->st.st_uid;
+	id[1]=cur->st.st_gid;
+	err=checkPermission(id, mod, W_OK);
+	if(err<0) return err;
+	freeNode(cur);
+	return 0;
+}
+
+static int hello_rmdir(const char *path){
+	DirTree *cur;
+	mode_t mod;
+	int err, id[2];
+	cur=findWithPath(path);
+	if(cur==NULL) return -ENOENT;
+	if(cur->next!=NULL) return -ENOTEMPTY;
+	for(int i=0;i<30;i++){
+		if(Fd.ptr_Tree[i]==cur)
+			return -EBUSY;
+	}
+
+	mod=cur->st.st_mode;
+	if(mod & __S_IFREG) return -ENOTDIR;
+	id[0]=cur->st.st_uid;
+	id[1]=cur->st.st_gid;
+	err=checkPermission(id, mod, W_OK);
+	if(err<0) return err;
+	freeNode(cur);
+	return 0;
+}
 
 static struct fuse_operations hello_oper = {
 	.getattr = hello_getattr,
@@ -298,17 +356,25 @@ static struct fuse_operations hello_oper = {
 	.truncate = hello_truncate,
 	.releasedir = hello_releasedir,
 	.mknod = hello_mknod,
+	.mkdir = hello_mkdir,
+	.unlink = hello_unlink,
+	.rmdir = hello_rmdir,
 };
 
 void init_global(){
 	Root=(DirTree*)malloc(sizeof(DirTree));
 	hello=(DirTree*)malloc(sizeof(DirTree));
 	char *tmp="Hello World!\n";
+	char *name="hello";
 	int len=strlen(tmp);
 	hello->child=hello->next=NULL;
+
 	hello->data=(char*)malloc(sizeof(char)*(len+1));
 	strcpy(hello->data, tmp);
-	hello->name="hello";
+	
+	hello->name=(char*)malloc(strlen(name)+1);
+	strcpy(hello->name, name);
+
 	hello->parent=Root;
 	hello->st.st_atime=hello->st.st_ctime=hello->st.st_mtime=time(NULL);
 	hello->st.st_uid=getuid();
@@ -316,7 +382,11 @@ void init_global(){
 	hello->st.st_mode=__S_IFREG|0777;
 	hello->st.st_size=len+1;
 
-	Root->name="/";
+	name="/";
+
+	Root->name=(char*)malloc(strlen(name)+1);
+	strcpy(Root->name, name);
+
 	Root->data=NULL;
 	Root->next=Root->parent=NULL;
 	Root->child=hello;
